@@ -1,0 +1,1175 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="description"
+        content="WAVS — Web Application Vulnerability Scanner"
+    >
+
+    <title>WAVS | Web Application Vulnerability Scanner</title>
+
+    <!-- Main stylesheet -->
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <!-- APPLICATION -->
+    <div class="app">
+
+        <!-- TOP NAVIGATION -->
+        <header class="topbar">
+
+            <div class="brand">
+                <div class="brand-mark">◈</div>
+
+                <div class="brand-text">
+                    <span class="brand-name">WAVS</span>
+
+                    <span class="brand-subtitle">
+                        WEB APPLICATION VULNERABILITY SCANNER
+                    </span>
+                </div>
+            </div>
+
+            <div class="topbar-center">
+                <div class="system-status">
+                    <span class="status-dot online"></span>
+                    <span>SYSTEM ONLINE</span>
+                </div>
+            </div>
+
+            <div class="topbar-right">
+
+                <div class="scanner-version">
+                    SCANNER <span>v1.0</span>
+                </div>
+
+                <button
+                    class="iconbutton"
+                    id="settingsButton"
+                    type="button"
+                    aria-label="Open settings"
+                >
+                    ⚙
+                </button>
+
+            </div>
+
+        </header>
+
+
+        <!-- MAIN DASHBOARD -->
+        <main class="dashboard">
+
+            <!-- LEFT CONTROL PANEL -->
+            <aside class="scanner-sidebar">
+
+                <!-- TARGET -->
+                <section class="sidebar-section target-section">
+
+                    <div class="section-label">
+                        <span class="section-number">01</span>
+                        TARGET
+                    </div>
+
+                    <div class="input-group">
+
+                        <label for="targetUrl">
+                            TARGET URL
+                        </label>
+
+                        <div class="url-input-wrapper">
+
+                            <span class="input-prefix">//</span>
+
+                            <input
+                                type="url"
+                                id="targetUrl"
+                                name="targetUrl"
+                                placeholder="https://example.com"
+                                autocomplete="off"
+                            >
+
+                        </div>
+
+                    </div>
+
+                </section>
+
+
+                <!-- SCAN PROFILE -->
+                <section class="sidebar-section">
+
+                    <div class="section-label">
+                        <span class="section-number">02</span>
+                        SCAN PROFILE
+                    </div>
+
+                    <div class="profile-selector">
+
+                        <button
+                            class="profile-option active"
+                            type="button"
+                            data-profile="full"
+                        >
+                            <span>
+                                <strong>FULL SCAN</strong>
+                                <small>All available modules</small>
+                            </span>
+
+                            <span class="radio-indicator"></span>
+                        </button>
+
+                        <button
+                            class="profile-option"
+                            type="button"
+                            data-profile="quick"
+                        >
+                            <span>
+                                <strong>QUICK SCAN</strong>
+                                <small>Fast vulnerability check</small>
+                            </span>
+
+                            <span class="radio-indicator"></span>
+                        </button>
+
+                        <button
+                            class="profile-option"
+                            type="button"
+                            data-profile="custom"
+                        >
+            <span>
+                <strong>CUSTOM</strong>
+                <small>Choose modules manually</small>
+            </span>
+
+            <span class="radio-indicator"></span>
+                        </button>
+
+                    </div>
+
+                </section>
+
+
+                <!-- SCANNER MODULES -->
+                <section class="sidebar-section">
+
+                    <div class="section-label">
+                        <span class="section-number">03</span>
+                        SCANNER MODULES
+                    </div>
+
+                    <div class="module-list">
+
+                        <label class="module-item">
+                            <input
+                                type="checkbox"
+                                name="module"
+                                value="crawler"
+                                checked
+                            >
+
+                            <span class="custom-checkbox"></span>
+
+                            <span class="module-info">
+                                <strong>CRAWLER</strong>
+                                <small>Endpoint discovery</small>
+                            </span>
+
+                            <span class="module-code">CRAWL</span>
+                        </label>
+
+
+                        <label class="module-item">
+                            <input
+                                type="checkbox"
+                                name="module"
+                                value="sqli"
+                                checked
+                            >
+
+                            <span class="custom-checkbox"></span>
+
+                            <span class="module-info">
+                                <strong>SQL INJECTION</strong>
+                                <small>Database injection</small>
+                            </span>
+
+                            <span class="module-code">SQLi</span>
+                        </label>
+
+
+                        <label class="module-item">
+                            <input
+                                type="checkbox"
+                                name="module"
+                                value="xss"
+                                checked
+                            >
+
+                            <span class="custom-checkbox"></span>
+
+            <span class="module-info">
+                <strong>XSS</strong>
+                <small>Cross-site scripting</small>
+            </span>
+
+            <span class="module-code">XSS</span>
+                        </label>
+
+
+                        <label class="module-item">
+                            <input
+                                type="checkbox"
+                                name="module"
+                                value="csrf"
+                                checked
+                            >
+
+                            <span class="custom-checkbox"></span>
+
+                            <span class="module-info">
+                                <strong>CSRF</strong>
+                                <small>Request forgery</small>
+                            </span>
+
+                            <span class="module-code">CSRF</span>
+                        </label>
+
+
+                        <label class="module-item">
+                            <input
+                                type="checkbox"
+                                name="module"
+                                value="ports"
+                                checked
+                            >
+
+                            <span class="custom-checkbox"></span>
+
+                            <span class="module-info">
+                                <strong>PORT SCAN</strong>
+                                <small>Open port discovery</small>
+                            </span>
+
+                            <span class="module-code">PORT</span>
+                        </label>
+
+                    </div>
+
+                </section>
+
+
+                <!-- SCAN ACTIONS -->
+                <section class="scan-actions">
+
+                    <button
+                        class="start-scan-button"
+                        id="startScanButton"
+                        type="button"
+                    >
+                        <span class="button-icon">▶</span>
+                        <span>START SCAN</span>
+                    </button>
+
+                    <button
+                        class="stop-scan-button"
+                        id="stopScanButton"
+                        type="button"
+                        disabled
+                    >
+                        STOP SCAN
+                    </button>
+
+                </section>
+
+
+                <!-- QUICK STATS -->
+                <section class="sidebar-section quick-stats-section">
+
+                    <div class="section-label">
+                        <span class="section-number">04</span>
+                        QUICK STATS
+                    </div>
+
+                    <div class="quick-stats">
+
+                        <div class="quick-stat">
+                            <span class="stat-label">ENDPOINTS</span>
+                            <strong id="endpointCount">00</strong>
+                        </div>
+
+                        <div class="quick-stat">
+                            <span class="stat-label">REQUESTS</span>
+                            <strong id="requestCount">000</strong>
+                        </div>
+
+                        <div class="quick-stat">
+                            <span class="stat-label">FINDINGS</span>
+                            <strong id="findingCount">00</strong>
+                        </div>
+
+                        <div class="quick-stat">
+                            <span class="stat-label">SCAN TIME</span>
+                            <strong id="scanTime">00:00</strong>
+                        </div>
+
+                    </div>
+
+                </section>
+
+            </aside>
+
+
+            <!-- MAIN WORKSPACE -->
+            <section class="workspace">
+
+                <!-- PAGE HEADER -->
+                <div class="workspace-header">
+
+                    <div>
+
+                        <span class="eyebrow">
+                            SECURITY OPERATIONS
+                        </span>
+
+                        <h1>
+                            Vulnerability
+                            <span>Intelligence</span>
+                        </h1>
+
+                        <p id="scanTargetDisplay">
+                            Awaiting target configuration...
+                        </p>
+
+                    </div>
+
+                    <div class="workspace-actions">
+
+                        <button
+                            class="secondary-button"
+                            id="refreshResultsButton"
+                            type="button"
+                        >
+                            ↻ REFRESH
+                        </button>
+
+                    </div>
+
+                </div>
+
+
+                <!-- SECURITY OVERVIEW -->
+                <section class="overview-grid">
+
+                    <!-- SECURITY SCORE -->
+                    <article class="dashboard-card score-card">
+
+                        <div class="card-header">
+
+                            <div>
+                                <span class="card-label">
+                                    SECURITY SCORE
+                                </span>
+
+                                <span class="card-description">
+                                    Overall target assessment
+                                </span>
+                            </div>
+
+                            <span class="card-symbol">◉</span>
+
+                        </div>
+
+                        <div class="score-content">
+
+                            <div
+                                class="score-ring"
+                                id="securityScoreRing"
+                            >
+
+                                <div class="score-value">
+                                    <strong id="securityScore">--</strong>
+                                    <span>/100</span>
+                                </div>
+
+                            </div>
+
+                            <div class="score-status">
+
+                                <span
+                                    class="severity-indicator"
+                                    id="scoreStatusIndicator"
+                                ></span>
+
+                                <span id="scoreStatus">
+                                    NOT SCANNED
+                                </span>
+
+                            </div>
+
+                        </div>
+
+                    </article>
+
+
+                    <!-- CRITICAL -->
+                    <article class="dashboard-card severity-card critical-card">
+
+                        <div class="severity-card-top">
+
+                            <span class="severity-label">
+                                CRITICAL
+                            </span>
+
+                            <span class="severity-icon">!</span>
+
+                        </div>
+
+                        <strong
+                            class="severity-number"
+                            id="criticalCount"
+                        >
+                            00
+                        </strong>
+
+                        <span class="severity-description">
+                            Immediate attention
+                        </span>
+
+                    </article>
+
+
+                    <!-- HIGH -->
+                    <article class="dashboard-card severity-card high-card">
+
+                        <div class="severity-card-top">
+
+                            <span class="severity-label">HIGH</span>
+                            <span class="severity-icon">▲</span>
+
+                        </div>
+
+                        <strong
+                            class="severity-number"
+                            id="highCount"
+                        >
+            00
+        </strong>
+
+        <span class="severity-description">
+            High-risk findings
+        </span>
+
+                    </article>
+
+
+                    <!-- MEDIUM -->
+                    <article class="dashboard-card severity-card medium-card">
+
+                        <div class="severity-card-top">
+
+                            <span class="severity-label">MEDIUM</span>
+                            <span class="severity-icon">◆</span>
+
+                        </div>
+
+                        <strong
+                            class="severity-number"
+                            id="mediumCount"
+                        >
+                            00
+                        </strong>
+
+                        <span class="severity-description">
+                            Review recommended
+                        </span>
+
+                    </article>
+
+
+                    <!-- LOW -->
+                    <article class="dashboard-card severity-card low-card">
+
+                        <div class="severity-card-top">
+
+                            <span class="severity-label">LOW</span>
+                            <span class="severity-icon">●</span>
+
+                        </div>
+
+                        <strong
+                            class="severity-number"
+                            id="lowCount"
+                        >
+            00
+        </strong>
+
+        <span class="severity-description">
+            Low-risk findings
+        </span>
+
+                    </article>
+
+                </section>
+
+
+                <!-- SCAN PROGRESS -->
+                <section class="dashboard-card scan-progress-card">
+
+                    <div class="card-header">
+
+                        <div>
+
+                            <span class="card-label">
+                                SCAN PROGRESS
+                            </span>
+
+                            <span class="card-description">
+                                Scanner engine activity
+                            </span>
+
+                        </div>
+
+                        <span
+                            class="scan-status-badge"
+                            id="scanStatusBadge"
+                        >
+                            IDLE
+                        </span>
+
+                    </div>
+
+
+                    <div class="progress-main">
+
+                        <div class="progress-percentage">
+                            <strong id="scanProgressValue">0</strong>
+                            <span>%</span>
+                        </div>
+
+                        <div class="progress-details">
+
+                            <div class="progress-label-row">
+
+                                <span id="currentScanStage">
+                                    Waiting for scan...
+                                </span>
+
+                                <span id="progressTarget">
+                                    --
+                                </span>
+
+                            </div>
+
+                            <div class="progress-track">
+
+                                <div
+                                    class="progress-bar"
+                                    id="scanProgressBar"
+                                    style="width: 0%;"
+                                ></div>
+
+                            </div>
+
+
+                            <div class="progress-meta">
+
+                                <span>
+                                    MODULE:
+                                    <strong id="activeModule">--</strong>
+                                </span>
+
+                                <span>
+                                    ETA:
+                                    <strong id="scanEta">--</strong>
+                                </span>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                </section>
+
+
+                <!-- VULNERABILITY MODULE MAP -->
+                <section class="dashboard-card module-map-card">
+
+                    <div class="card-header">
+
+                        <div>
+
+                            <span class="card-label">
+                                VULNERABILITY MAP
+                            </span>
+
+                            <span class="card-description">
+                                Detection modules
+                            </span>
+
+                        </div>
+
+                        <span class="module-map-status">LIVE</span>
+
+                    </div>
+
+
+                    <div class="module-map">
+
+                        <!-- CRAWLER -->
+                        <div
+                            class="module-status-card"
+                            data-module="crawler"
+                        >
+
+                            <div class="module-status-icon">◌</div>
+
+                            <div class="module-status-info">
+                                <strong>CRAWLER</strong>
+
+                                <span id="crawlerStatus">
+                                    Waiting
+                                </span>
+                            </div>
+
+                            <div
+                                class="module-finding-count"
+                                id="crawlerCount"
+                            >
+                                --
+                            </div>
+
+                        </div>
+
+
+                        <!-- SQLi -->
+                        <div
+                            class="module-status-card"
+                            data-module="sqli"
+        >
+
+            <div class="module-status-icon">⌁</div>
+
+            <div class="module-status-info">
+                <strong>SQL INJECTION</strong>
+
+                <span id="sqliStatus">
+                    Waiting
+                </span>
+            </div>
+
+            <div
+                class="module-finding-count"
+                id="sqliCount"
+            >
+                00
+            </div>
+
+        </div>
+
+
+        <!-- XSS -->
+        <div
+            class="module-status-card"
+            data-module="xss"
+        >
+
+            <div class="module-status-icon">&lt;/&gt;</div>
+
+            <div class="module-status-info">
+                <strong>XSS</strong>
+
+                <span id="xssStatus">
+                    Waiting
+                </span>
+            </div>
+
+            <div
+                class="module-finding-count"
+                id="xssCount"
+            >
+                00
+            </div>
+
+        </div>
+
+
+        <!-- CSRF -->
+        <div
+            class="module-status-card"
+            data-module="csrf"
+        >
+
+            <div class="module-status-icon">⛨</div>
+
+            <div class="module-status-info">
+                <strong>CSRF</strong>
+
+                <span id="csrfStatus">
+                    Waiting
+                </span>
+            </div>
+
+            <div
+                class="module-finding-count"
+                id="csrfCount"
+            >
+                00
+            </div>
+
+        </div>
+
+
+        <!-- PORTS -->
+        <div
+            class="module-status-card"
+            data-module="ports"
+        >
+
+            <div class="module-status-icon">◈</div>
+
+            <div class="module-status-info">
+                <strong>PORT SCAN</strong>
+
+                <span id="portsStatus">
+                    Waiting
+                </span>
+            </div>
+
+            <div
+                class="module-finding-count"
+                id="portsCount"
+            >
+                00
+            </div>
+
+        </div>
+
+                    </div>
+
+                </section>
+
+
+                <!-- LOWER DASHBOARD -->
+                <div class="lower-dashboard">
+
+                    <!-- LIVE SCAN CONSOLE -->
+                    <section class="dashboard-card console-card">
+
+                        <div class="card-header">
+
+                            <div>
+
+                                <span class="card-label">
+                                    LIVE SCAN CONSOLE
+                                </span>
+
+                                <span class="card-description">
+                                    Scanner engine output
+                                </span>
+
+                            </div>
+
+                            <div class="console-controls">
+
+                                <span class="console-status">
+                                    <span class="status-dot"></span>
+                                    STREAM
+                                </span>
+
+                                <button
+                                    type="button"
+                                    id="clearConsoleButton"
+                                >
+                                    CLEAR
+                                </button>
+
+                            </div>
+
+                        </div>
+
+
+                        <div
+                            class="console-output"
+                            id="consoleOutput"
+                            aria-live="polite"
+        >
+
+            <div class="console-line system-line">
+
+                <span class="console-time">[--:--:--]</span>
+
+                <span class="console-type">SYSTEM</span>
+
+                <span class="console-message">
+                    Scanner initialized. Awaiting target...
+                </span>
+
+            </div>
+
+        </div>
+
+
+        <div class="console-input-line">
+
+            <span class="console-prompt">WAVS&gt;</span>
+            <span class="console-cursor"></span>
+
+        </div>
+
+                    </section>
+
+
+                    <!-- SCAN TELEMETRY -->
+                    <section class="dashboard-card telemetry-card">
+
+                        <div class="card-header">
+
+                            <div>
+
+                                <span class="card-label">
+                                    TELEMETRY
+                                </span>
+
+                                <span class="card-description">
+                                    Current scan metrics
+                                </span>
+
+                            </div>
+
+                        </div>
+
+
+                        <div class="telemetry-list">
+
+                            <div class="telemetry-row">
+                                <span>REQUESTS SENT</span>
+                                <strong id="telemetryRequests">000</strong>
+                            </div>
+
+                            <div class="telemetry-row">
+                                <span>ENDPOINTS FOUND</span>
+                                <strong id="telemetryEndpoints">00</strong>
+                            </div>
+
+                            <div class="telemetry-row">
+                                <span>PARAMETERS</span>
+                                <strong id="telemetryParameters">00</strong>
+                            </div>
+
+                            <div class="telemetry-row">
+                                <span>PORTS CHECKED</span>
+                                <strong id="telemetryPorts">00</strong>
+                            </div>
+
+            <div class="telemetry-row">
+                <span>RESPONSE ERRORS</span>
+                <strong id="telemetryErrors">00</strong>
+            </div>
+
+                        </div>
+
+                    </section>
+
+                </div>
+
+
+                <!-- FINDINGS -->
+                <section class="dashboard-card findings-card">
+
+                    <div class="card-header findings-header">
+
+                        <div>
+
+                            <span class="card-label">
+                                VULNERABILITY FINDINGS
+                            </span>
+
+                            <span class="card-description">
+                                Detected security issues
+                            </span>
+
+                        </div>
+
+
+                        <div class="findings-actions">
+
+                            <select
+                                id="severityFilter"
+                                class="filter-select"
+                            >
+                                <option value="all">ALL SEVERITIES</option>
+                                <option value="critical">CRITICAL</option>
+                                <option value="high">HIGH</option>
+                                <option value="medium">MEDIUM</option>
+                                <option value="low">LOW</option>
+                            </select>
+
+
+                            <select
+                                id="moduleFilter"
+                                class="filter-select"
+                            >
+                                <option value="all">ALL MODULES</option>
+                                <option value="sqli">SQL INJECTION</option>
+                                <option value="xss">XSS</option>
+                                <option value="csrf">CSRF</option>
+                                <option value="ports">PORT SCAN</option>
+                            </select>
+
+                        </div>
+
+                    </div>
+
+
+                    <!-- FINDINGS TABLE -->
+                    <div class="findings-table-wrapper">
+
+                        <table class="findings-table">
+
+                            <thead>
+                                <tr>
+                                    <th>SEVERITY</th>
+                                    <th>VULNERABILITY</th>
+                                    <th>AFFECTED TARGET</th>
+                                    <th>MODULE</th>
+                                    <th>DETECTED</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+
+
+                            <tbody id="findingsTableBody">
+
+                                <!-- Findings will be injected by main.js -->
+
+                                <tr class="empty-findings-row">
+
+                                    <td colspan="6">
+
+                                        <div class="empty-state">
+
+                                            <span class="empty-icon">◇</span>
+
+                                            <strong>NO FINDINGS</strong>
+
+                                            <span>
+                                                Start a scan to analyze the target.
+                                            </span>
+
+                                        </div>
+
+                                    </td>
+
+                                </tr>
+
+                            </tbody>
+
+                        </table>
+
+                    </div>
+
+                </section>
+
+
+                <!-- FINDING DETAILS -->
+                <section
+                    class="dashboard-card finding-details-card"
+                    id="findingDetails"
+                >
+
+                    <div class="card-header">
+
+                        <div>
+
+                            <span class="card-label">
+                                FINDING DETAILS
+                            </span>
+
+                            <span class="card-description">
+                                Technical vulnerability analysis
+                            </span>
+
+                        </div>
+
+                        <button
+                            type="button"
+                            class="close-details-button"
+                            id="closeFindingDetails"
+                            aria-label="Close finding details"
+                        >
+                            ×
+                        </button>
+
+                    </div>
+
+
+                    <div class="finding-details-content">
+
+                        <div class="finding-detail-title">
+
+                            <span
+                                class="severity-badge"
+                                id="detailSeverity"
+                            >
+                                --
+                            </span>
+
+                            <h2 id="detailTitle">
+                                Select a finding
+                            </h2>
+
+                        </div>
+
+
+                        <div class="detail-grid">
+
+                            <div class="detail-item">
+                                <span>AFFECTED URL</span>
+                                <code id="detailUrl">--</code>
+                            </div>
+
+                            <div class="detail-item">
+                                <span>MODULE</span>
+                                <strong id="detailModule">--</strong>
+                            </div>
+
+                            <div class="detail-item">
+                                <span>PARAMETER</span>
+                                <code id="detailParameter">--</code>
+                            </div>
+
+                            <div class="detail-item">
+                                <span>DETECTED</span>
+                                <strong id="detailDetected">--</strong>
+                            </div>
+
+                        </div>
+
+
+                        <div class="detail-section">
+                            <h3>DESCRIPTION</h3>
+
+                            <p id="detailDescription">
+                                Select a vulnerability from the findings
+                                table to view its analysis.
+                            </p>
+                        </div>
+
+
+                        <div class="detail-section">
+                            <h3>IMPACT</h3>
+                            <p id="detailImpact">--</p>
+                        </div>
+
+
+                        <div class="detail-section">
+                            <h3>EVIDENCE</h3>
+                            <pre id="detailEvidence"><code>--</code></pre>
+                        </div>
+
+
+                        <div class="detail-section remediation-section">
+                            <h3>REMEDIATION</h3>
+                            <p id="detailRemediation">--</p>
+                        </div>
+
+                    </div>
+
+                </section>
+
+
+                <!-- REPORT CENTER -->
+                <section class="report-center">
+
+                    <div class="report-info">
+
+                        <span class="eyebrow">REPORT CENTER</span>
+
+                        <h2>Generate Security Report</h2>
+
+                        <p>
+                            Export the current scan results for
+                            documentation and remediation tracking.
+                        </p>
+
+                    </div>
+
+
+                    <div class="report-actions">
+
+                        <button
+                            class="report-button json-report-button"
+                            id="jsonReportButton"
+                            type="button"
+                        >
+                            <span>⇩</span>
+                            EXPORT JSON
+                        </button>
+
+                        <button
+                            class="report-button pdf-report-button"
+                            id="pdfReportButton"
+                            type="button"
+                        >
+                            <span>⇩</span>
+                            GENERATE PDF
+                        </button>
+
+                    </div>
+
+                </section>
+
+            </section>
+
+        </main>
+
+
+        <!-- FOOTER -->
+        <footer class="footer">
+
+            <div class="footer-left">
+
+                <span class="status-dot online"></span>
+
+                <span>WAVS ENGINE READY</span>
+
+            </div>
+
+
+            <div class="footer-center">
+                <span>OWASP-ALIGNED SECURITY ANALYSIS</span>
+            </div>
+
+
+            <div class="footer-right">
+
+                <span>FLASK BACKEND</span>
+
+                <span class="footer-divider">//</span>
+
+                <span>LOCAL INSTANCE</span>
+
+            </div>
+
+        </footer>
+
+    </div>
+
+
+    <!-- JAVASCRIPT -->
+    <script src="main.js" defer></script>
+
+</body>
+</html>
