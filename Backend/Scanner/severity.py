@@ -1,6 +1,8 @@
 
 """Severity classification and scan-result summaries."""
 
+from collections import Counter
+
 
 SEVERITY_ORDER = {
     "Critical": 4,
@@ -10,31 +12,63 @@ SEVERITY_ORDER = {
     "Info": 0,
 }
 
+DEFAULT_SEVERITY = "Info"
+
+
+# =============================================
+# SEVERITY NORMALIZATION
+# =============================================
+
+def normalize_severity(severity):
+    """
+    Normalize a severity value to a supported classification.
+    """
+    if not isinstance(severity, str):
+        return DEFAULT_SEVERITY
+
+    normalized = severity.strip().lower()
+
+    for supported in SEVERITY_ORDER:
+        if normalized == supported.lower():
+            return supported
+
+    return DEFAULT_SEVERITY
+
+
+# =============================================
+# SEVERITY CLASSIFICATION
+# =============================================
 
 def classify_severity(category: str, evidence: str = "") -> str:
     """
-    Classify finding severity based on its category
+    Classify finding severity based on vulnerability category
     and available evidence.
 
     Returns:
-        A severity string: Critical, High, Medium, Low, or Info.
+        Critical, High, Medium, Low, or Info.
     """
-
     category = str(category or "").strip().lower()
     evidence = str(evidence or "").strip().lower()
 
     # SQL Injection
-    if "sql injection" in category:
-
-        if "confirmed" in evidence:
+    if "sql injection" in category or "sqli" in category:
+        if any(keyword in evidence for keyword in (
+            "confirmed",
+            "database error",
+            "sql syntax error",
+            "successful injection",
+        )):
             return "Critical"
 
         return "High"
 
     # Cross-Site Scripting
-    if "xss" in category:
-
-        if "reflected" in evidence:
+    if "cross-site scripting" in category or "xss" in category:
+        if any(keyword in evidence for keyword in (
+            "confirmed",
+            "executed",
+            "reflected payload",
+        )):
             return "High"
 
         return "Medium"
@@ -43,17 +77,28 @@ def classify_severity(category: str, evidence: str = "") -> str:
     if "csrf" in category:
         return "Medium"
 
-    # Port scanning results
+    # Open TCP ports
     if "port" in category:
         return "Info"
 
-    # Security header findings
+    # Security headers
     if "security header" in category:
         return "Low"
 
-    # Default severity
-    return "Info"
+    # Information disclosure
+    if any(keyword in category for keyword in (
+        "information disclosure",
+        "sensitive information",
+        "directory listing",
+    )):
+        return "Low"
 
+    return DEFAULT_SEVERITY
+
+
+# =============================================
+# FINDINGS SUMMARY
+# =============================================
 
 def summarize_findings(findings):
     """
@@ -71,37 +116,83 @@ def summarize_findings(findings):
             }
         }
     """
-
-    findings = findings or []
-
-    counts = {
+    counts = Counter({
         severity: 0
         for severity in SEVERITY_ORDER
-    }
+    })
+
+    if not isinstance(findings, (list, tuple)):
+        findings = []
 
     total = 0
 
-    for item in findings:
-
-        # Ignore malformed finding entries.
-        if not isinstance(item, dict):
+    for finding in findings:
+        if not isinstance(finding, dict):
             continue
 
-        severity = item.get("severity", "Info")
-
-        # Normalize severity capitalization.
-        if isinstance(severity, str):
-
-            severity = severity.strip().capitalize()
-
-        # Handle unexpected severity values gracefully.
-        if severity not in SEVERITY_ORDER:
-            severity = "Info"
+        severity = normalize_severity(
+            finding.get("severity", DEFAULT_SEVERITY)
+        )
 
         counts[severity] += 1
         total += 1
 
     return {
         "total": total,
-        "by_severity": counts,
+        "by_severity": dict(counts),
     }
+
+
+# =============================================
+# HIGHEST SEVERITY
+# =============================================
+
+def get_highest_severity(findings):
+    """
+    Return the highest severity present in findings.
+    """
+    highest = DEFAULT_SEVERITY
+
+    if not isinstance(findings, (list, tuple)):
+        return highest
+
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+
+        severity = normalize_severity(
+            finding.get("severity", DEFAULT_SEVERITY)
+        )
+
+        if SEVERITY_ORDER[severity] > SEVERITY_ORDER[highest]:
+            highest = severity
+
+    return highest
+
+
+# =============================================
+# SEVERITY SORTING
+# =============================================
+
+def sort_findings(findings, descending=True):
+    """
+    Sort findings by severity.
+
+    Critical findings appear first by default.
+    """
+    if not isinstance(findings, (list, tuple)):
+        return []
+
+    valid_findings = [
+        finding
+        for finding in findings
+        if isinstance(finding, dict)
+    ]
+
+    return sorted(
+        valid_findings,
+        key=lambda finding: SEVERITY_ORDER[
+            normalize_severity(finding.get("severity"))
+        ],
+        reverse=descending,
+    )
