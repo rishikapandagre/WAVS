@@ -1,198 +1,259 @@
 
-"""Severity classification and scan-result summaries."""
+"""TCP port scanner for authorized security assessments."""
 
-from collections import Counter
+import ipaddress
+import socket
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse
 
-SEVERITY_ORDER = {
-    "Critical": 4,
-    "High": 3,
-    "Medium": 2,
-    "Low": 1,
-    "Info": 0,
-}
-
-DEFAULT_SEVERITY = "Info"
+from Backend.config import DEFAULT_PORTS, MAX_PORTS
+from Backend.Utils.request_handler import normalize_target
+from Backend.Utils.logger import logger
 
 
-# =============================================
-# SEVERITY NORMALIZATION
-# =============================================
-
-def normalize_severity(severity):
-    """
-    Normalize a severity value to a supported classification.
-    """
-    if not isinstance(severity, str):
-        return DEFAULT_SEVERITY
-
-    normalized = severity.strip().lower()
-
-    for supported in SEVERITY_ORDER:
-        if normalized == supported.lower():
-            return supported
-
-    return DEFAULT_SEVERITY
+DEFAULT_TIMEOUT = 0.45
+MAX_TIMEOUT = 3.0
+DEFAULT_WORKERS = 32
+MAX_WORKERS = 64
 
 
-# =============================================
-# SEVERITY CLASSIFICATION
-# =============================================
+def _validate_ports(ports):
+    """Validate, deduplicate, and limit TCP ports."""
+    if ports is None:
+        ports = DEFAULT_PORTS
 
-def classify_severity(category: str, evidence: str = "") -> str:
-    """
-    Classify finding severity based on vulnerability category
-    and available evidence.
-
-    Returns:
-        Critical, High, Medium, Low, or Info.
-    """
-    category = str(category or "").strip().lower()
-    evidence = str(evidence or "").strip().lower()
-
-    # SQL Injection
-    if "sql injection" in category or "sqli" in category:
-        if any(keyword in evidence for keyword in (
-            "confirmed",
-            "database error",
-            "sql syntax error",
-            "successful injection",
-        )):
-            return "Critical"
-
-        return "High"
-
-    # Cross-Site Scripting
-    if "cross-site scripting" in category or "xss" in category:
-        if any(keyword in evidence for keyword in (
-            "confirmed",
-            "executed",
-            "reflected payload",
-        )):
-            return "High"
-
-        return "Medium"
-
-    # Cross-Site Request Forgery
-    if "csrf" in category:
-        return "Medium"
-
-    # Open TCP ports
-    if "port" in category:
-        return "Info"
-
-    # Security headers
-    if "security header" in category:
-        return "Low"
-
-    # Information disclosure
-    if any(keyword in category for keyword in (
-        "information disclosure",
-        "sensitive information",
-        "directory listing",
-    )):
-        return "Low"
-
-    return DEFAULT_SEVERITY
-
-
-# =============================================
-# FINDINGS SUMMARY
-# =============================================
-
-def summarize_findings(findings):
-    """
-    Generate a summary of findings grouped by severity.
-
-    Returns:
-        {
-            "total": int,
-            "by_severity": {
-                "Critical": int,
-                "High": int,
-                "Medium": int,
-                "Low": int,
-                "Info": int
-            }
-        }
-    """
-    counts = Counter({
-        severity: 0
-        for severity in SEVERITY_ORDER
-    })
-
-    if not isinstance(findings, (list, tuple)):
-        findings = []
-
-    total = 0
-
-    for finding in findings:
-        if not isinstance(finding, dict):
-            continue
-
-        severity = normalize_severity(
-            finding.get("severity", DEFAULT_SEVERITY)
-        )
-
-        counts[severity] += 1
-        total += 1
-
-    return {
-        "total": total,
-        "by_severity": dict(counts),
-    }
-
-
-# =============================================
-# HIGHEST SEVERITY
-# =============================================
-
-def get_highest_severity(findings):
-    """
-    Return the highest severity present in findings.
-    """
-    highest = DEFAULT_SEVERITY
-
-    if not isinstance(findings, (list, tuple)):
-        return highest
-
-    for finding in findings:
-        if not isinstance(finding, dict):
-            continue
-
-        severity = normalize_severity(
-            finding.get("severity", DEFAULT_SEVERITY)
-        )
-
-        if SEVERITY_ORDER[severity] > SEVERITY_ORDER[highest]:
-            highest = severity
-
-    return highest
-
-
-# =============================================
-# SEVERITY SORTING
-# =============================================
-
-def sort_findings(findings, descending=True):
-    """
-    Sort findings by severity.
-
-    Critical findings appear first by default.
-    """
-    if not isinstance(findings, (list, tuple)):
+    if isinstance(ports, (str, bytes)):
+        logger.warning("Ports must be an iterable of integers.")
         return []
 
-    valid_findings = [
-        finding
-        for finding in findings
-        if isinstance(finding, dict)
-    ]
+    try:
+        iterator = iter(ports)
+    except TypeError:
+        logger.warning("Invalid ports collection.")
+        return []
 
-    return sorted(
-        valid_findings,
-        key=lambda finding: SEVERITY_ORDER[
-            normalize_severity(finding.get("severity"))
-        ],
-        reverse=descending,
+    valid_ports = []
+
+    for port in iterator:
+        if isinstance(port, bool):
+            continue
+
+        try:
+            if isinstance(port, float) and not port.is_integer():
+                continue
+
+            if isinstance(port, str):
+                port = port.strip()
+                if not port.isdigit():
+                    continue
+
+            port = int(port)
+
+        except (ValueError, TypeError, OverflowError):
+            continue
+
+        if 1 <= port <= 65535:
+            valid_ports.append(port)
+
+    return list(dict.fromkeys(valid_ports))[:MAX_PORTS]
+
+
+def _validate_timeout(timeout):
+    """Return a bounded socket timeout."""
+    try:
+        timeout = float(timeout)
+        if not 0 < timeout < float("inf"):
+            raise ValueError
+        return max(0.1, min(timeout, MAX_TIMEOUT))
+    except (ValueError, TypeError, OverflowError):
+        return DEFAULT_TIMEOUT
+
+
+def _validate_workers(workers):
+    """Return a bounded worker count."""
+    try:
+        if isinstance(workers, bool):
+            raise ValueError
+
+        workers = int(workers)
+
+    except (ValueError, TypeError, OverflowError):
+        workers = DEFAULT_WORKERS
+
+    return max(1, min(workers, MAX_WORKERS))
+
+
+def _resolve_host(host):
+    """
+    Resolve the hostname and reject non-public IP addresses.
+
+    This protects the scanner from accidentally probing internal,
+    loopback, link-local, and reserved network addresses.
+    """
+    try:
+        addresses = socket.getaddrinfo(
+            host,
+            None,
+            family=socket.AF_UNSPEC,
+            type=socket.SOCK_STREAM,
+        )
+
+    except socket.gaierror as exc:
+        logger.warning("DNS resolution failed for %s: %s", host, exc)
+        return None
+
+    if not addresses:
+        return None
+
+    unique_addresses = {}
+
+    for result in addresses:
+        address = result[4][0]
+
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+
+        # Reject the target if ANY resolved address is non-public.
+        if not ip.is_global:
+            logger.warning(
+                "Port scan rejected: %s resolved to a non-public IP.",
+                host,
+            )
+            return None
+
+        unique_addresses[str(ip)] = (
+            socket.AF_INET6
+            if isinstance(ip, ipaddress.IPv6Address)
+            else socket.AF_INET,
+            address,
+        )
+
+    return list(unique_addresses.values())
+
+
+def scan_ports(target, ports=None, timeout=DEFAULT_TIMEOUT, workers=DEFAULT_WORKERS):
+    """
+    Scan TCP ports on an authorized public target.
+
+    Args:
+        target: Target URL, hostname, or IP address.
+        ports: Iterable of TCP ports to scan.
+        timeout: Socket timeout in seconds.
+        workers: Maximum concurrent workers.
+
+    Returns:
+        Sorted list of dictionaries describing open TCP ports.
+    """
+    try:
+        normalized = normalize_target(target)
+        parsed = urlparse(normalized)
+        host = parsed.hostname
+
+    except (ValueError, TypeError) as exc:
+        logger.warning("Invalid port scan target: %s", exc)
+        return []
+
+    if not host:
+        logger.warning("Unable to extract hostname from target.")
+        return []
+
+    selected_ports = _validate_ports(ports)
+
+    if not selected_ports:
+        logger.info("No valid ports selected for scanning.")
+        return []
+
+    timeout = _validate_timeout(timeout)
+    workers = _validate_workers(workers)
+
+    resolved_addresses = _resolve_host(host)
+
+    if not resolved_addresses:
+        logger.warning("No safe addresses available for %s.", host)
+        return []
+
+    # Use a single resolved address to prevent unintended multi-host scans.
+    socket_family, resolved_address = resolved_addresses[0]
+
+    def check_port(port):
+        """Attempt a TCP connection without sending application payloads."""
+        try:
+            with socket.socket(
+                socket_family,
+                socket.SOCK_STREAM,
+            ) as sock:
+
+                sock.settimeout(timeout)
+
+                if socket_family == socket.AF_INET6:
+                    address = (resolved_address, port, 0, 0)
+                else:
+                    address = (resolved_address, port)
+
+                result = sock.connect_ex(address)
+
+                if result != 0:
+                    return None
+
+                try:
+                    service = socket.getservbyport(port, "tcp")
+                except OSError:
+                    service = "unknown"
+
+                return {
+                    "port": port,
+                    "state": "open",
+                    "service": service,
+                }
+
+        except (socket.timeout, OSError) as exc:
+            logger.debug("Port %s check failed: %s", port, exc)
+            return None
+
+    results = []
+    max_workers = min(workers, len(selected_ports))
+
+    logger.info(
+        "Starting TCP port scan: host=%s ports=%d workers=%d",
+        host,
+        len(selected_ports),
+        max_workers,
     )
+
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+
+            futures = {
+                executor.submit(check_port, port): port
+                for port in selected_ports
+            }
+
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+
+                    if result:
+                        results.append(result)
+
+                except Exception:
+                    logger.exception(
+                        "Port scan worker failed for port %s",
+                        futures[future],
+                    )
+
+    except Exception:
+        logger.exception("TCP port scan failed for host %s", host)
+        return results
+
+    results.sort(key=lambda item: item["port"])
+
+    logger.info(
+        "TCP port scan completed: host=%s open_ports=%d",
+        host,
+        len(results),
+    )
+
+    return results
