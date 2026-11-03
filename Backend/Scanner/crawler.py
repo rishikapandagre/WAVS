@@ -216,12 +216,7 @@ def _resolve_link(base_url, href):
 
         return link
 
-    except (
-        ValueError,
-        TypeError,
-    TargetError,
-    Exception,
-    ):
+    except Exception:
         return None
 
 
@@ -307,17 +302,24 @@ def crawl(
     # --------------------------------------------------
     # CRAWL LOOP
     # --------------------------------------------------
-
+    logger.info("Crawler target: %s", target)
+    logger.info("Initial queue: %s", list(queue))
+    logger.info("Maximum crawl pages: %s", max_pages)
+    logger.info("Maximum scan requests: %s", MAX_SCAN_REQUESTS)
+    
     while queue and len(pages) < max_pages:
 
-        # Respect the overall request budget.
-        if total_requests >= MAX_SCAN_REQUESTS:
+        logger.info(
+            "Crawler loop entered | Queue: %s | Requests: %s",
+            len(queue),
+            total_requests,
+        )
 
+        if total_requests >= MAX_SCAN_REQUESTS:
             logger.warning(
                 "Crawler reached request limit: %s",
                 MAX_SCAN_REQUESTS,
             )
-
             break
 
         current_url = canonical_url(
@@ -339,19 +341,36 @@ def crawl(
             # FETCH PAGE
             # ------------------------------------------
 
+
+            logger.info("Crawler attempting request: %s", current_url)
             response = safe_get(
                 current_url,
                 timeout=REQUEST_TIMEOUT,
             )
-
             total_requests += 1
+
+            
+            logger.info(
+                "Crawler response | URL: %s | HTTP: %s | Content-Type: %s",
+                current_url,
+                response.status_code,
+                response.headers.get("Content-Type", "unknown"),
+            )
+
 
             # ------------------------------------------
             # VALIDATE RESPONSE
             # ------------------------------------------
 
+            
             if not _is_valid_content_type(response):
+                logger.warning(
+                    "Crawler skipped non-HTML response | URL: %s | Content-Type: %s",
+                    current_url,
+                    response.headers.get("Content-Type", "unknown"),
+                )
                 continue
+
 
             if _is_oversized_response(response):
 
@@ -561,11 +580,11 @@ def crawl(
                 exc,
             )
 
-        except Exception:
-
+        except Exception as exc:
             logger.exception(
-                "Crawler failed on page: %s",
+                "Crawler failed on page: %s | Error: %s",
                 current_url,
+                str(exc),
             )
 
         finally:
