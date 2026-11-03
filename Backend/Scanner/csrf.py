@@ -1,75 +1,174 @@
 
-"""
-Low-impact CSRF checks.
+"""Low-impact CSRF checks for WAVS.
 
 Identifies state-changing forms without obvious anti-CSRF
-token fields. Does not submit forms or modify state.
+token fields. Forms are never submitted or modified.
 """
 
+# ==================================================
+# CONFIGURATION
+# ==================================================
 
-def scan_csrf(forms):
-    findings = []
+TOKEN_PATTERNS = (
+    "csrf",
+    "xsrf",
+    "authenticity",
+    "requestverificationtoken",
+    "anti-csrf",
+    "antcsrf",
+    "csrfmiddlewaretoken",
+    "__requestverificationtoken",
+)
 
-    token_names = (
-        "csrf",
-        "xsrf",
-        "authenticity",
-        "requestverificationtoken",
+STATE_CHANGING_METHODS = {
+    "POST",
+    "PUT",
+    "PATCH",
+    "DELETE",
+}
+
+DEFAULT_SEVERITY = "Medium"
+
+
+# ==================================================
+# HELPER FUNCTIONS
+# ==================================================
+
+def _normalize_method(method):
+    """Normalize and validate an HTTP method."""
+
+    return str(
+        method or "GET"
+    ).strip().upper()
+
+
+def _extract_field_names(fields):
+    """Safely extract normalized form field names."""
+
+    if not isinstance(fields, list):
+        return set()
+
+    names = set()
+
+    for field in fields:
+
+        if not isinstance(field, dict):
+            continue
+
+        name = field.get("name")
+
+        if not name:
+            continue
+
+        names.add(
+            str(name).strip().lower()
+        )
+
+    return names
+
+
+def _has_csrf_token(fields):
+    """Check whether a form contains an obvious CSRF token."""
+
+    names = _extract_field_names(
+        fields
     )
 
-    state_changing_methods = {
-        "post",
-        "put",
-        "patch",
-        "delete",
+    return any(
+        pattern in name
+        for name in names
+        for pattern in TOKEN_PATTERNS
+    )
+
+
+def _build_finding(form, method):
+    """Construct a standardized CSRF finding."""
+
+    return {
+        "type": "Potential CSRF Protection Missing",
+        "url": form.get("page", ""),
+        "parameter": "(form)",
+        "method": method,
+        "severity": DEFAULT_SEVERITY,
+        "evidence": (
+            "A state-changing form contains no obvious "
+            "anti-CSRF token field. Cookie SameSite "
+            "attributes and server-side validation "
+            "were not verified."
+        ),
+        "recommendation": (
+            "Implement framework-provided CSRF protection, "
+            "validate tokens server-side, and configure "
+            "appropriate SameSite cookie attributes. "
+            "Consider Origin and Referer validation "
+            "as additional defense-in-depth."
+        ),
     }
 
-    for form in forms or []:
+
+# ==================================================
+# MAIN CSRF SCANNER
+# ==================================================
+
+def scan_csrf(forms):
+    """
+    Analyze discovered forms for potential CSRF risks.
+
+    This scanner is passive and does not submit forms.
+
+    Args:
+        forms (list): Forms collected by the crawler.
+
+    Returns:
+        list: Potential CSRF findings.
+    """
+
+    findings = []
+
+    if not isinstance(forms, list):
+        return findings
+
+    for form in forms:
+
+        # ------------------------------------------
+        # VALIDATE FORM
+        # ------------------------------------------
 
         if not isinstance(form, dict):
             continue
 
-        method = str(form.get("method") or "get").strip().lower()
+        # ------------------------------------------
+        # CHECK HTTP METHOD
+        # ------------------------------------------
 
-        # Only check state-changing HTTP methods.
-        if method not in state_changing_methods:
-            continue
-
-        fields = form.get("fields") or []
-
-        # Extract field names safely.
-        names = {
-            str(field.get("name", "")).strip().lower()
-            for field in fields
-            if isinstance(field, dict) and field.get("name")
-        }
-
-        # Check for common anti-CSRF token names.
-        token_like = any(
-            token in name
-            for name in names
-            for token in token_names
+        method = _normalize_method(
+            form.get("method")
         )
 
-        # Report only forms without an obvious CSRF token.
-        if not token_like:
-            findings.append({
-                "type": "Potential CSRF Protection Missing",
-                "url": form.get("page"),
-                "parameter": "(form)",
-                "method": method.upper(),
-                "severity": "Medium",
-                "evidence": (
-                    "A state-changing form contains no obvious "
-                    "anti-CSRF token field. Cookie SameSite "
-                    "and server-side validation were not verified."
-                ),
-                "recommendation": (
-                    "Use framework CSRF protection, validate "
-                    "tokens server-side, and configure "
-                 
-                   "appropriate SameSite cookie attributes."
-                )
-            })
+        if method not in STATE_CHANGING_METHODS:
+            continue
+
+        # ------------------------------------------
+        # CHECK CSRF TOKEN
+        # ------------------------------------------
+
+        fields = form.get(
+            "fields",
+            [],
+        )
+
+        if _has_csrf_token(fields):
+            continue
+
+        # ------------------------------------------
+        # GENERATE FINDING
+        # ------------------------------------------
+
+        findings.append(
+            _build_finding(
+                form,
+                method,
+            )
+        )
 
     return findings
