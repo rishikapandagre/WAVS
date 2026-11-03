@@ -1,121 +1,175 @@
 
 """WAVS - Web Application Vulnerability Scanner API."""
 
+import os
+from pathlib import Path
+
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 
-from config import MAX_CRAWL_PAGES
+from Backend.config import MAX_CRAWL_PAGES
 
-from Utils.request_handler import normalize_target, TargetError
-from Utils.logger import logger
+from Backend.Utils.request_handler import normalize_target, TargetError
+from Backend.Utils.logger import logger
 
-from Scanner.crawler import crawl
-from Scanner.sql_injection import scan_sql_injection
-from Scanner.xss import scan_xss
-from Scanner.csrf import scan_csrf
-from Scanner.port_scan import scan_ports
-from Scanner.severity import summarize_findings
+from Backend.Scanner.crawler import crawl
+from Backend.Scanner.sql_injection import scan_sql_injection
+from Backend.Scanner.xss import scan_xss
+from Backend.Scanner.csrf import scan_csrf
+from Backend.Scanner.port_scan import scan_ports
+from Backend.Scanner.severity import summarize_findings
 
-from database.db import (
+from Backend.database.db import (
     init_db,
     save_scan,
     get_scan,
     list_scans,
-    delete_scan,
+    delete_scan
 )
 
-from Reports.report_generator import generate_html_report
+from Backend.Reports.report_generator import generate_html_report
 
 
 # =========================================================
-# APPLICATION CONFIGURATION
+# PATHS & APPLICATION SETUP
 # =========================================================
 
-app = Flask(__name__)
+BASE_DIR = Path(__file__).resolve().parent
+FRONTEND_DIR = BASE_DIR.parent / "frontend"
+
+app = Flask(
+    __name__,
+    instance_relative_config=True,
+)
+
+app.config.update(
+    JSON_SORT_KEYS=False,
+    MAX_CONTENT_LENGTH=int(
+        os.getenv("MAX_CONTENT_LENGTH", 1024 * 1024)
+    ),
+    API_VERSION=os.getenv("API_VERSION", "1.0"),
+    DEBUG=os.getenv("FLASK_DEBUG", "false").lower()
+    in ("1", "true", "yes"),
+    TESTING=os.getenv("FLASK_TESTING", "false").lower()
+    in ("1", "true", "yes"),
+)
+
+
+# =========================================================
+# CORS
+# =========================================================
+
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS",
+        "http://127.0.0.1:5500,http://localhost:5500",
+    ).split(",")
+    if origin.strip()
+]
 
 CORS(
     app,
     resources={
         r"/api/*": {
-            "origins": "*",
+            "origins": cors_origins,
+            "methods": ["GET", "POST", "DELETE", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization"],
         }
     },
 )
 
-app.config["JSON_SORT_KEYS"] = False
 
-# Initialize database.
-init_db()
+# =========================================================
+# DATABASE INITIALIZATION
+# =========================================================
+
+try:
+    init_db()
+    logger.info("WAVS database initialized successfully.")
+except Exception:
+    logger.exception("Database initialization failed.")
+    raise
 
 
 # =========================================================
-# ERROR RESPONSE HELPER
+# SECURITY HEADERS
 # =========================================================
+
+@app.after_request
+def add_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = (
+        "strict-origin-when-cross-origin"
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+# =========================================================
+# API RESPONSE HELPERS
+# =========================================================
+
+def success(data=None, message=None, status=200):
+    response = {"success": True}
+
+    if message:
+        response["message"] = message
+
+    if data is not None:
+        response.update(data)
+
+    return jsonify(response), status
+
 
 def error(message, status=400):
-    """Return a standardized API error response."""
-
     return jsonify({
         "success": False,
-        "error": message,
+        "error": str(message),
     }), status
 
 
 # =========================================================
-# HOME ROUTE
+# VALIDATION HELPERS
 # =========================================================
 
-@app.get("/")
-def home():
-    """Return API information and available endpoints."""
+def validate_integer(value, name, minimum, maximum):
+    """Validate an integer within a specified range."""
 
-    return jsonify({
-        "name": "WAVS API",
-        "version": "1.0",
-        "status": "running",
-        "endpoints": [
-            "POST /api/scan",
-            "GET /api/scans",
-            "GET /api/scans/<id>",
-            "GET /api/scans/<id>/report",
-            "DELETE /api/scans/<id>",
-            "GET /api/health",
-        ],
-    })
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a valid integer.")
 
+    try:
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError
 
-# =========================================================
-# HEALTH CHECK
-# =========================================================
+        if isinstance(value, str):
+            value = value.strip()
 
-@app.get("/api/health")
-def health():
-    """Check whether the API is running."""
+            if not value or not value.isdigit():
+                raise ValueError
 
-    return jsonify({
-        "success": True,
-        "status": "healthy",
-    })
+        result = int(value)
 
+    except (ValueError, TypeError, OverflowError):
+        raise ValueError(f"{name} must be a valid integer.")
 
-# =========================================================
-# MODULE CONFIGURATION HELPER
-# =========================================================
+    if not minimum <= result <= maximum:
+        raise ValueError(
+            f"{name} must be between {minimum} and {maximum}."
+        )
+
+    return result
+
 
 def get_selected_modules(data):
-    """
-    Read scanner module selections from the frontend.
-
-    If modules are not provided, enable web scanner
-    modules by default for backward compatibility.
-    """
+    """Validate and return the selected scanner modules."""
 
     modules = data.get("modules", {})
 
     if not isinstance(modules, dict):
-        raise ValueError(
-            "'modules' must be a JSON object."
-        )
+        raise ValueError("'modules' must be a JSON object.")
 
     selected = {
         "crawler": modules.get("crawler", True),
@@ -129,7 +183,6 @@ def get_selected_modules(data):
     }
 
     for name, enabled in selected.items():
-
         if not isinstance(enabled, bool):
             raise ValueError(
                 f"Module '{name}' must be true or false."
@@ -138,17 +191,70 @@ def get_selected_modules(data):
     return selected
 
 
+def validate_ports(raw_ports):
+    """Validate user-supplied ports."""
+
+    if raw_ports is None:
+        return None
+
+    if not isinstance(raw_ports, list):
+        raise ValueError("'ports' must be a list of integers.")
+
+    if not raw_ports:
+        raise ValueError("'ports' cannot be empty when provided.")
+
+    validated = []
+
+    for port in raw_ports:
+        if isinstance(port, bool) or not isinstance(port, int):
+            raise ValueError("Every port must be an integer.")
+
+        if not 1 <= port <= 65535:
+            raise ValueError(
+                "Ports must be between 1 and 65535."
+            )
+
+        validated.append(port)
+
+    return list(dict.fromkeys(validated))
+
+
 # =========================================================
-# SCAN ROUTE
+# HOME
+# =========================================================
+
+@app.get("/")
+def home():
+    return success({
+        "name": "WAVS API",
+        "version": app.config["API_VERSION"],
+        "status": "running",
+        "endpoints": {
+            "scan": "POST /api/scan",
+            "history": "GET /api/scans",
+            "details": "GET /api/scans/<id>",
+            "report": "GET /api/scans/<id>/report",
+            "delete": "DELETE /api/scans/<id>",
+            "health": "GET /api/health",
+        },
+    })
+
+
+# =========================================================
+# HEALTH CHECK
+# =========================================================
+
+@app.get("/api/health")
+def health():
+    return success({"status": "healthy"})
+
+
+# =========================================================
+# START SCAN
 # =========================================================
 
 @app.post("/api/scan")
 def start_scan():
-    """Execute the requested security scan."""
-
-    # -----------------------------------------------------
-    # READ REQUEST
-    # -----------------------------------------------------
 
     data = request.get_json(silent=True)
 
@@ -157,133 +263,65 @@ def start_scan():
             "Request body must contain a valid JSON object."
         )
 
-    # -----------------------------------------------------
-    # VALIDATE TARGET
-    # -----------------------------------------------------
+    # Validate target URL.
+    raw_target = data.get("target") or data.get("url")
+
+    if not isinstance(raw_target, str) or not raw_target.strip():
+        return error("Please provide a valid target URL.")
 
     try:
-        target = normalize_target(
-            data.get("target") or
-            data.get("url") or
-            ""
-        )
-
+        target = normalize_target(raw_target)
     except TargetError as exc:
         return error(str(exc))
 
-    # -----------------------------------------------------
-    # VALIDATE MODULE CONFIGURATION
-    # -----------------------------------------------------
-
+    # Validate selected modules.
     try:
         modules = get_selected_modules(data)
-
     except ValueError as exc:
         return error(str(exc))
-
-    # -----------------------------------------------------
-    # VALIDATE PAGE LIMIT
-    # -----------------------------------------------------
-
-    raw_limit = data.get(
-        "max_pages",
-        MAX_CRAWL_PAGES,
-    )
-
-    try:
-        if isinstance(raw_limit, bool):
-            raise ValueError
-
-        limit = int(raw_limit)
-
-    except (ValueError, TypeError):
-        return error(
-            "max_pages must be a valid integer."
-        )
-
-    limit = max(
-        1,
-        min(limit, MAX_CRAWL_PAGES),
-    )
-
-    # -----------------------------------------------------
-    # VALIDATE PORTS
-    # -----------------------------------------------------
-
-    raw_ports = data.get("ports")
-
-    if raw_ports is not None:
-
-        if not isinstance(raw_ports, list):
-            return error(
-                "ports must be a list of integers."
-            )
-
-        for port in raw_ports:
-
-            if (
-                not isinstance(port, int)
-                or isinstance(port, bool)
-            ):
-                return error(
-                    "Every port must be an integer."
-                )
-
-            if not 1 <= port <= 65535:
-                return error(
-                    "Port numbers must be between 1 and 65535."
-                )
-
-    # -----------------------------------------------------
-    # CHECK MODULE SELECTION
-    # -----------------------------------------------------
 
     if not any(modules.values()):
         return error(
             "Please select at least one scanner module."
         )
 
-    # -----------------------------------------------------
-    # INITIALIZE SCAN RESULTS
-    # -----------------------------------------------------
+    # Validate crawler limit.
+    try:
+        limit = validate_integer(
+            data.get("max_pages", MAX_CRAWL_PAGES),
+            "max_pages",
+            1,
+            MAX_CRAWL_PAGES,
+        )
+    except ValueError as exc:
+        return error(str(exc))
+
+    # Validate ports.
+    try:
+        ports = validate_ports(data.get("ports"))
+    except ValueError as exc:
+        return error(str(exc))
 
     findings = []
-    ports = []
+    port_results = []
     forms = []
     pages = []
     visited_count = 0
 
-    # -----------------------------------------------------
-    # EXECUTE SCAN
-    # -----------------------------------------------------
+    logger.info("Scan initiated | Target: %s", target)
+    logger.info("Selected modules: %s", modules)
 
     try:
 
-        logger.info(
-            "WAVS scan initiated for %s",
-            target,
-        )
-
-        logger.info(
-            "Selected modules: %s",
-            modules,
-        )
-
-        # =================================================
-        # 1. CRAWLER
-        # =================================================
+        # -------------------------------------------------
+        # CRAWLER
+        # -------------------------------------------------
 
         if modules["crawler"]:
 
-            logger.info(
-                "Crawler started for %s",
-                target,
-            )
+            logger.info("Crawler started.")
 
-            crawled = crawl(
-                target,
-                limit,
-            )
+            crawled = crawl(target, limit)
 
             if not isinstance(crawled, dict):
                 raise RuntimeError(
@@ -299,157 +337,133 @@ def start_scan():
             )
 
             logger.info(
-                "Crawler completed. Pages: %s | Forms: %s",
+                "Crawler completed | Pages: %s | Forms: %s",
                 visited_count,
                 len(forms),
             )
 
         else:
-
-            # Without crawling, query-based scanners
-            # can inspect only the supplied target.
+            # When crawling is disabled, scan only the
+            # explicitly supplied target URL.
             pages = [target]
             forms = []
-            visited_count = 0
+            visited_count = 1
 
-            logger.info("Crawler module skipped.")
+            logger.info("Crawler skipped.")
 
-        # =================================================
-        # 2. SQL INJECTION SCANNER
-        # =================================================
+        # -------------------------------------------------
+        # SQL INJECTION
+        # -------------------------------------------------
 
         if modules["sqli"]:
 
+            logger.info("SQL Injection scanner started.")
+
+            result = scan_sql_injection(pages, forms)
+            result = result or []
+
+            if not isinstance(result, list):
+                raise RuntimeError(
+                    "SQL Injection scanner returned invalid results."
+                )
+
+            findings.extend(result)
+
             logger.info(
-                "SQL Injection scanner started."
+                "SQL Injection scan completed | Findings: %s",
+                len(result),
             )
 
-            sqli_findings = scan_sql_injection(
-                pages,
-                forms,
-            )
-
-            findings.extend(
-                sqli_findings or []
-            )
-
-            logger.info(
-                "SQL Injection scanner completed. Findings: %s",
-                len(sqli_findings or []),
-            )
-
-        else:
-            logger.info(
-                "SQL Injection scanner skipped."
-            )
-
-        # =================================================
-        # 3. XSS SCANNER
-        # =================================================
+        # -------------------------------------------------
+        # XSS
+        # -------------------------------------------------
 
         if modules["xss"]:
 
             logger.info("XSS scanner started.")
 
-            xss_findings = scan_xss(
-                pages,
-                forms,
-            )
+            result = scan_xss(pages, forms)
+            result = result or []
 
-            findings.extend(
-                xss_findings or []
-            )
+            if not isinstance(result, list):
+                raise RuntimeError(
+                    "XSS scanner returned invalid results."
+                )
+
+            findings.extend(result)
 
             logger.info(
-                "XSS scanner completed. Findings: %s",
-                len(xss_findings or []),
+                "XSS scan completed | Findings: %s",
+                len(result),
             )
 
-        else:
-            logger.info(
-                "XSS scanner skipped."
-            )
-
-        # =================================================
-        # 4. CSRF SCANNER
-        # =================================================
+        # -------------------------------------------------
+        # CSRF
+        # -------------------------------------------------
 
         if modules["csrf"]:
 
             logger.info("CSRF scanner started.")
 
-            csrf_findings = scan_csrf(forms)
+            result = scan_csrf(forms)
+            result = result or []
 
-            findings.extend(
-                csrf_findings or []
-            )
+            if not isinstance(result, list):
+                raise RuntimeError(
+                    "CSRF scanner returned invalid results."
+                )
+
+            findings.extend(result)
 
             logger.info(
-                "CSRF scanner completed. Findings: %s",
-                len(csrf_findings or []),
+                "CSRF scan completed | Findings: %s",
+                len(result),
             )
 
-        else:
-            logger.info(
-                "CSRF scanner skipped."
-            )
-
-        # =================================================
-        # 5. PORT SCANNER
-        # =================================================
+        # -------------------------------------------------
+        # PORT SCANNER
+        # -------------------------------------------------
 
         if modules["ports"]:
 
-            logger.info(
-                "Port scanner started for %s",
-                target,
-            )
+            logger.info("Port scanner started.")
 
-            ports = scan_ports(
-                target,
-                raw_ports,
-            )
-
-            ports = ports or []
+            result = scan_ports(target, ports)
+            port_results = result or []
 
             logger.info(
-                "Port scanner completed. Results: %s",
-                len(ports),
+                "Port scan completed | Open ports: %s",
+                len(port_results),
             )
 
-        else:
-            logger.info(
-                "Port scanner skipped."
-            )
-
-        # =================================================
-        # GENERATE SUMMARY
-        # =================================================
+        # -------------------------------------------------
+        # SUMMARY
+        # -------------------------------------------------
 
         summary = summarize_findings(findings)
 
-        # =================================================
-        # SAVE SCAN TO DATABASE
-        # =================================================
+        # -------------------------------------------------
+        # SAVE TO DATABASE
+        # -------------------------------------------------
 
         scan_id = save_scan(
-            target,
-            findings,
-            summary,
-            visited_count,
-            ports,
+            target=target,
+            findings=findings,
+            summary=summary,
+            pages_count=visited_count,
+            ports=port_results,
         )
 
         if scan_id is None:
             raise RuntimeError(
-                "Database failed to save the scan."
+                "Database failed to save scan results."
             )
 
-        # =================================================
-        # BUILD RESPONSE
-        # =================================================
+        # -------------------------------------------------
+        # RESPONSE
+        # -------------------------------------------------
 
-        result = {
+        scan_result = {
             "id": scan_id,
             "target": target,
             "status": "completed",
@@ -457,42 +471,26 @@ def start_scan():
             "forms_found": len(forms),
             "findings": findings,
             "summary": summary,
-            "ports": ports,
+            "ports": port_results,
             "modules": modules,
         }
 
-        # =================================================
-        # LOG COMPLETION
-        # =================================================
-
         logger.info(
-            "Scan #%s completed for %s",
+            "Scan completed | ID: %s | Target: %s",
             scan_id,
             target,
         )
 
-        # =================================================
-        # RETURN RESPONSE
-        # =================================================
-
-        return jsonify({
-            "success": True,
-            "scan": result,
-        }), 200
-
-    # =====================================================
-    # EXCEPTION HANDLING
-    # =====================================================
+        return success({"scan": scan_result})
 
     except Exception:
-
         logger.exception(
-            "Scan failed for %s",
+            "Scan execution failed | Target: %s",
             target,
         )
 
         return error(
-            "Scan failed. Check server logs for details.",
+            "Scan failed. Please check server logs.",
             500,
         )
 
@@ -503,39 +501,24 @@ def start_scan():
 
 @app.get("/api/scans")
 def history():
-    """Return previous scans."""
 
     try:
-        raw_limit = request.args.get(
+        limit = validate_integer(
+            request.args.get("limit", "50"),
             "limit",
-            50,
+            1,
+            100,
         )
 
-        limit = int(raw_limit)
-
-    except (ValueError, TypeError):
-        return error(
-            "limit must be an integer."
-        )
-
-    limit = max(
-        1,
-        min(limit, 100),
-    )
-
-    try:
         scans = list_scans(limit)
 
-        return jsonify({
-            "success": True,
-            "scans": scans,
-        })
+        return success({"scans": scans})
+
+    except ValueError as exc:
+        return error(str(exc))
 
     except Exception:
-
-        logger.exception(
-            "Failed to retrieve scan history."
-        )
+        logger.exception("Failed to retrieve scan history.")
 
         return error(
             "Could not retrieve scan history.",
@@ -549,15 +532,18 @@ def history():
 
 @app.get("/api/scans/<int:scan_id>")
 def scan_detail(scan_id):
-    """Return details of a specific scan."""
 
     try:
         scan = get_scan(scan_id)
 
-    except Exception:
+        if not scan:
+            return error("Scan not found.", 404)
 
+        return success({"scan": scan})
+
+    except Exception:
         logger.exception(
-            "Failed to retrieve scan #%s",
+            "Failed to retrieve scan | ID: %s",
             scan_id,
         )
 
@@ -566,47 +552,44 @@ def scan_detail(scan_id):
             500,
         )
 
-    if not scan:
-        return error(
-            "Scan not found.",
-            404,
-        )
-
-    return jsonify({
-        "success": True,
-        "scan": scan,
-    })
-
 
 # =========================================================
-# HTML REPORT DOWNLOAD
+# HTML REPORT
 # =========================================================
 
 @app.get("/api/scans/<int:scan_id>/report")
 def scan_report(scan_id):
-    """Generate and download an HTML scan report."""
 
     try:
         scan = get_scan(scan_id)
 
         if not scan:
-            return error(
-                "Scan not found.",
-                404,
+            return error("Scan not found.", 404)
+
+        report_path = generate_html_report(scan)
+
+        if not report_path:
+            raise RuntimeError(
+                "Report generator did not return a file path."
             )
 
-        path = generate_html_report(scan)
+        report_path = Path(report_path).resolve()
+
+        if not report_path.is_file():
+            raise FileNotFoundError(
+                "Generated report file does not exist."
+            )
 
         return send_file(
-            path,
+            report_path,
             as_attachment=True,
             download_name=f"WAVS_report_{scan_id}.html",
+            mimetype="text/html",
         )
 
     except Exception:
-
         logger.exception(
-            "Report generation failed for scan #%s",
+            "Report generation failed | ID: %s",
             scan_id,
         )
 
@@ -622,15 +605,22 @@ def scan_report(scan_id):
 
 @app.delete("/api/scans/<int:scan_id>")
 def remove_scan(scan_id):
-    """Delete a scan from history."""
 
     try:
         deleted = delete_scan(scan_id)
 
-    except Exception:
+        if not deleted:
+            return error("Scan not found.", 404)
 
+        logger.info("Scan deleted | ID: %s", scan_id)
+
+        return success(
+            message="Scan deleted successfully."
+        )
+
+    except Exception:
         logger.exception(
-            "Failed to delete scan #%s",
+            "Failed to delete scan | ID: %s",
             scan_id,
         )
 
@@ -639,54 +629,56 @@ def remove_scan(scan_id):
             500,
         )
 
-    if deleted:
-        return jsonify({
-            "success": True,
-            "message": "Scan deleted.",
-        })
-
-    return error(
-        "Scan not found.",
-        404,
-    )
-
 
 # =========================================================
 # ERROR HANDLERS
 # =========================================================
 
+@app.errorhandler(400)
+def bad_request(_exception):
+    return error("Invalid request.", 400)
+
+
 @app.errorhandler(404)
-def not_found(_):
-    return error(
-        "Endpoint not found.",
-        404,
-    )
+def not_found(_exception):
+    return error("Endpoint not found.", 404)
 
 
 @app.errorhandler(405)
-def method_not_allowed(_):
-    return error(
-        "Method not allowed.",
-        405,
-    )
+def method_not_allowed(_exception):
+    return error("Method not allowed.", 405)
+
+
+@app.errorhandler(413)
+def payload_too_large(_exception):
+    return error("Request payload is too large.", 413)
 
 
 @app.errorhandler(500)
-def internal_server_error(_):
-    return error(
-        "Internal server error.",
-        500,
-    )
+def internal_server_error(_exception):
+    return error("Internal server error.", 500)
 
 
 # =========================================================
-# RUN APPLICATION
+# DIRECT EXECUTION
 # =========================================================
 
 if __name__ == "__main__":
 
+    host = os.getenv("HOST", "127.0.0.1")
+
+    try:
+        port = validate_integer(
+            os.getenv("PORT", "5000"),
+            "PORT",
+            1,
+            65535,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+
     app.run(
-        host="127.0.0.1",
-        port=5000,
-        debug=False,
+        host=host,
+        port=port,
+        debug=app.config["DEBUG"],
     )
