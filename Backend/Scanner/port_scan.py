@@ -1,20 +1,142 @@
 
 """TCP port scanner for authorized security assessments."""
 
-import socket
 import ipaddress
+import socket
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 
-from config import DEFAULT_PORTS, MAX_PORTS
-from Utils.request_handler import normalize_target
-from Utils.logger import logger
+from Backend.config import DEFAULT_PORTS, MAX_PORTS
+from Backend.Utils.request_handler import normalize_target
+from Backend.Utils.logger import logger
 
 
-def scan_ports(target, ports=None, timeout=0.45, workers=32):
+DEFAULT_TIMEOUT = 0.45
+MAX_TIMEOUT = 3.0
+DEFAULT_WORKERS = 32
+MAX_WORKERS = 64
+
+
+def _validate_ports(ports):
+    """Validate, deduplicate, and limit TCP ports."""
+    if ports is None:
+        ports = DEFAULT_PORTS
+
+    if isinstance(ports, (str, bytes)):
+        logger.warning("Ports must be an iterable of integers.")
+        return []
+
+    try:
+        iterator = iter(ports)
+    except TypeError:
+        logger.warning("Invalid ports collection.")
+        return []
+
+    valid_ports = []
+
+    for port in iterator:
+        if isinstance(port, bool):
+            continue
+
+        try:
+            if isinstance(port, float) and not port.is_integer():
+                continue
+
+            if isinstance(port, str):
+                port = port.strip()
+                if not port.isdigit():
+                    continue
+
+            port = int(port)
+
+        except (ValueError, TypeError, OverflowError):
+            continue
+
+        if 1 <= port <= 65535:
+            valid_ports.append(port)
+
+    return list(dict.fromkeys(valid_ports))[:MAX_PORTS]
+
+
+def _validate_timeout(timeout):
+    """Return a bounded socket timeout."""
+    try:
+        timeout = float(timeout)
+        if not 0 < timeout < float("inf"):
+            raise ValueError
+        return max(0.1, min(timeout, MAX_TIMEOUT))
+    except (ValueError, TypeError, OverflowError):
+        return DEFAULT_TIMEOUT
+
+
+def _validate_workers(workers):
+    """Return a bounded worker count."""
+    try:
+        if isinstance(workers, bool):
+            raise ValueError
+
+        workers = int(workers)
+
+    except (ValueError, TypeError, OverflowError):
+        workers = DEFAULT_WORKERS
+
+    return max(1, min(workers, MAX_WORKERS))
+
+
+def _resolve_host(host):
     """
-    Scan a limited list of TCP ports on an authorized target.
+    Resolve the hostname and reject non-public IP addresses.
+
+    This protects the scanner from accidentally probing internal,
+    loopback, link-local, and reserved network addresses.
+    """
+    try:
+        addresses = socket.getaddrinfo(
+            host,
+            None,
+            family=socket.AF_UNSPEC,
+            type=socket.SOCK_STREAM,
+        )
+
+    except socket.gaierror as exc:
+        logger.warning("DNS resolution failed for %s: %s", host, exc)
+        return None
+
+    if not addresses:
+        return None
+
+    unique_addresses = {}
+
+    for result in addresses:
+        address = result[4][0]
+
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+
+        # Reject the target if ANY resolved address is non-public.
+        if not ip.is_global:
+            logger.warning(
+                "Port scan rejected: %s resolved to a non-public IP.",
+                host,
+            )
+            return None
+
+        unique_addresses[str(ip)] = (
+            socket.AF_INET6
+            if isinstance(ip, ipaddress.IPv6Address)
+            else socket.AF_INET,
+            address,
+        )
+
+    return list(unique_addresses.values())
+
+
+def scan_ports(target, ports=None, timeout=DEFAULT_TIMEOUT, workers=DEFAULT_WORKERS):
+    """
+    Scan TCP ports on an authorized public target.
 
     Args:
         target: Target URL, hostname, or IP address.
@@ -23,13 +145,8 @@ def scan_ports(target, ports=None, timeout=0.45, workers=32):
         workers: Maximum concurrent workers.
 
     Returns:
-        A sorted list of open-port dictionaries.
+        Sorted list of dictionaries describing open TCP ports.
     """
-
-    # =============================================
-    # TARGET VALIDATION
-    # =============================================
-
     try:
         normalized = normalize_target(target)
         parsed = urlparse(normalized)
@@ -40,173 +157,49 @@ def scan_ports(target, ports=None, timeout=0.45, workers=32):
         return []
 
     if not host:
-        logger.warning(
-            "Unable to extract hostname from target."
-        )
+        logger.warning("Unable to extract hostname from target.")
         return []
 
-    # Determine address family where possible.
-    try:
-        ip_address = ipaddress.ip_address(host)
+    selected_ports = _validate_ports(ports)
 
-        if isinstance(ip_address, ipaddress.IPv6Address):
-            address_family = socket.AF_INET6
-        else:
-            address_family = socket.AF_INET
-
-    except ValueError:
-        # Hostname: let getaddrinfo resolve it.
-        address_family = socket.AF_UNSPEC
-
-    # =============================================
-    # PORT VALIDATION
-    # =============================================
-
-    if ports is None:
-        ports = DEFAULT_PORTS
-
-    valid_ports = []
-
-    try:
-        for port in ports:
-
-            try:
-                port = int(port)
-
-                if 1 <= port <= 65535:
-                    valid_ports.append(port)
-
-                else:
-                    logger.warning(
-                        "Port out of range, skipped: %s",
-                        port
-                    )
-
-            except (TypeError, ValueError, OverflowError):
-                logger.warning(
-                    "Invalid port skipped: %s",
-                    port
-                )
-
-    except TypeError:
-        logger.warning(
-            "Invalid ports collection provided."
-        )
-        return []
-
-    # Deduplicate and enforce configured maximum.
-    ports = list(dict.fromkeys(valid_ports))[:MAX_PORTS]
-
-    if not ports:
+    if not selected_ports:
         logger.info("No valid ports selected for scanning.")
         return []
 
-    # =============================================
-    # TIMEOUT VALIDATION
-    # =============================================
+    timeout = _validate_timeout(timeout)
+    workers = _validate_workers(workers)
 
-    try:
-        timeout = float(timeout)
-
-    except (TypeError, ValueError, OverflowError):
-        timeout = 0.45
-
-    # Keep timeout within reasonable limits.
-    timeout = max(
-        0.1,
-        min(timeout, 3.0)
-    )
-
-    # =============================================
-    # WORKER VALIDATION
-    # =============================================
-
-    try:
-        workers = int(workers)
-
-    except (TypeError, ValueError, OverflowError):
-        workers = 32
-
-    workers = max(
-        1,
-        min(workers, 64)
-    )
-
-    # =============================================
-    # HOST RESOLUTION
-    # =============================================
-
-    try:
-        resolved_addresses = socket.getaddrinfo(
-            host,
-            None,
-            family=address_family,
-            type=socket.SOCK_STREAM
-        )
-
-    except socket.gaierror as exc:
-        logger.warning(
-            "Unable to resolve target hostname %s: %s",
-            host,
-            exc
-        )
-        return []
+    resolved_addresses = _resolve_host(host)
 
     if not resolved_addresses:
-        logger.warning(
-            "No addresses found for target: %s",
-            host
-        )
+        logger.warning("No safe addresses available for %s.", host)
         return []
 
-    # Use one resolved address to avoid scanning multiple
-    # addresses unintentionally for a single hostname.
-    resolved_address = resolved_addresses[0][4][0]
+    # Use a single resolved address to prevent unintended multi-host scans.
+    socket_family, resolved_address = resolved_addresses[0]
 
-    # Determine socket family from resolved address.
-    resolved_ip = ipaddress.ip_address(
-        resolved_address
-    )
-
-    if isinstance(resolved_ip, ipaddress.IPv6Address):
-        socket_family = socket.AF_INET6
-    else:
-        socket_family = socket.AF_INET
-
-    # =============================================
-    # PORT CHECK
-    # =============================================
-
-    def check(port):
-        """
-        Check whether a single TCP port is open.
-
-        Uses a TCP connection attempt only.
-        No service exploitation or payload transmission.
-        """
-
+    def check_port(port):
+        """Attempt a TCP connection without sending application payloads."""
         try:
             with socket.socket(
                 socket_family,
-                socket.SOCK_STREAM
+                socket.SOCK_STREAM,
             ) as sock:
 
                 sock.settimeout(timeout)
 
-                connection_code = sock.connect_ex(
-                    (resolved_address, port)
-                )
+                if socket_family == socket.AF_INET6:
+                    address = (resolved_address, port, 0, 0)
+                else:
+                    address = (resolved_address, port)
 
-                if connection_code != 0:
+                result = sock.connect_ex(address)
+
+                if result != 0:
                     return None
 
-                # Resolve the registered TCP service name.
                 try:
-                    service = socket.getservbyport(
-                        port,
-                        "tcp"
-                    )
-
+                    service = socket.getservbyport(port, "tcp")
                 except OSError:
                     service = "unknown"
 
@@ -217,77 +210,50 @@ def scan_ports(target, ports=None, timeout=0.45, workers=32):
                 }
 
         except (socket.timeout, OSError) as exc:
-            logger.debug(
-                "Port %s check failed: %s",
-                port,
-                exc
-            )
-
-        except Exception as exc:
-            logger.warning(
-                "Unexpected port scan error on port %s: %s",
-                port,
-                exc
-            )
-
-        return None
-
-    # =============================================
-    # CONCURRENT SCANNING
-    # =============================================
+            logger.debug("Port %s check failed: %s", port, exc)
+            return None
 
     results = []
-
-    max_workers = min(
-        workers,
-        len(ports)
-    )
+    max_workers = min(workers, len(selected_ports))
 
     logger.info(
-        "Starting TCP port scan on %s (%d ports)",
+        "Starting TCP port scan: host=%s ports=%d workers=%d",
         host,
-        len(ports)
+        len(selected_ports),
+        max_workers,
     )
 
-    with ThreadPoolExecutor(
-        max_workers=max_workers
-    ) as pool:
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
 
-        futures = {
-            pool.submit(check, port): port
-            for port in ports
-        }
+            futures = {
+                executor.submit(check_port, port): port
+                for port in selected_ports
+            }
 
-        for future in as_completed(futures):
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
 
-            try:
-                result = future.result()
+                    if result:
+                        results.append(result)
 
-                if result is not None:
-                    results.append(result)
+                except Exception:
+                    logger.exception(
+                        "Port scan worker failed for port %s",
+                        futures[future],
+                    )
 
-            except Exception as exc:
+    except Exception:
+        logger.exception("TCP port scan failed for host %s", host)
+        return results
 
-                port = futures[future]
-
-                logger.warning(
-                    "Port scan worker failed on port %s: %s",
-                    port,
-                    exc
-                )
-
-    # =============================================
-    # RESULTS
-    # =============================================
-
-    results.sort(
-        key=lambda item: item["port"]
-    )
+    results.sort(key=lambda item: item["port"])
 
     logger.info(
-        "Port scan completed for %s: %d open ports found",
+        "TCP port scan completed: host=%s open_ports=%d",
         host,
-        len(results)
+        len(results),
     )
 
     return results
