@@ -1,14 +1,18 @@
 
-"""Low-impact same-origin web crawler for WAVS."""
+"""Low-impact, configurable same-origin web crawler for WAVS."""
 
 from collections import deque
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
-from config import MAX_CRAWL_PAGES
+from Backend.config import (
+    MAX_CRAWL_PAGES,
+    REQUEST_TIMEOUT,
+    MAX_SCAN_REQUESTS,
+)
 
-from Utils.request_handler import (
+from Backend.Utils.request_handler import (
     normalize_target,
     safe_get,
     same_origin,
@@ -16,19 +20,32 @@ from Utils.request_handler import (
     TargetError,
 )
 
-from Utils.logger import logger
+from Backend.Utils.logger import logger
 
 
-# Maximum HTML content processed per page (1.5 MB).
+# ==================================================
+# CRAWLER CONFIGURATION
+# ==================================================
+
 MAX_HTML_SIZE = 1_500_000
 
-# Maximum forms discovered per page.
 MAX_FORMS_PER_PAGE = 100
 
-# Maximum fields collected from one form.
 MAX_FIELDS_PER_FORM = 100
 
-# Links that may trigger state-changing actions.
+MAX_LINKS_PER_PAGE = 1000
+
+MAX_TITLE_LENGTH = 500
+
+MAX_FIELD_NAME_LENGTH = 300
+
+MAX_FIELD_VALUE_LENGTH = 500
+
+
+# ==================================================
+# UNSAFE LINK PATTERNS
+# ==================================================
+
 SKIP_LINK_PATTERNS = (
     "logout",
     "log-out",
@@ -44,19 +61,20 @@ SKIP_LINK_PATTERNS = (
 )
 
 
-def _should_skip_link(url: str) -> bool:
-    """
-    Determine whether a URL should be skipped during crawling.
+# ==================================================
+# HELPER FUNCTIONS
+# ==================================================
 
-    Skips common state-changing routes to reduce unintended effects.
-    """
+def _should_skip_link(url: str) -> bool:
+    """Skip common state-changing routes."""
 
     try:
         parsed = urlparse(url)
 
-        path = parsed.path.lower()
-
-        segments = path.split("/")
+        segments = [
+            segment.lower()
+            for segment in parsed.path.split("/")
+        ]
 
         return any(
             pattern in segment
@@ -64,11 +82,157 @@ def _should_skip_link(url: str) -> bool:
             for pattern in SKIP_LINK_PATTERNS
         )
 
-    except Exception:
+    except (ValueError, TypeError):
         return True
 
 
-def crawl(target: str, max_pages: int = MAX_CRAWL_PAGES):
+def _is_valid_content_type(response) -> bool:
+    """Determine whether a response contains HTML."""
+
+    content_type = response.headers.get(
+        "Content-Type",
+        "",
+    ).lower()
+
+    return (
+        "text/html" in content_type
+        or "application/xhtml+xml" in content_type
+    )
+
+
+def _is_oversized_response(response) -> bool:
+    """Check declared response size before processing."""
+
+    content_length = response.headers.get(
+        "Content-Length",
+    )
+
+    if not content_length:
+        return False
+
+    try:
+        return int(content_length) > MAX_HTML_SIZE
+
+    except (ValueError, TypeError):
+        return False
+
+
+def _extract_title(soup) -> str:
+    """Extract and normalize the page title."""
+
+    if not soup.title:
+        return ""
+
+    return soup.title.get_text(
+        separator=" ",
+        strip=True,
+    )[:MAX_TITLE_LENGTH]
+
+
+def _extract_form_fields(form):
+    """Extract form fields without submitting the form."""
+
+    fields = []
+
+    for element in form.find_all(
+        ["input", "textarea", "select", "button"],
+        limit=MAX_FIELDS_PER_FORM,
+    ):
+
+        name = element.get("name")
+
+        if not name:
+            continue
+
+        field_type = element.get(
+            "type",
+            element.name,
+        )
+
+        value = element.get(
+            "value",
+            "",
+        )
+
+        fields.append({
+            "name": str(name)[:MAX_FIELD_NAME_LENGTH],
+            "type": str(field_type)[:100],
+            "value": str(value)[:MAX_FIELD_VALUE_LENGTH],
+        })
+
+    return fields
+
+
+def _normalize_form_method(method):
+    """Normalize the HTML form method."""
+
+    method = (
+        method or "GET"
+    ).strip().upper()
+
+    if method not in ("GET", "POST"):
+        method = "GET"
+
+    return method
+
+
+def _resolve_link(base_url, href):
+    """Resolve and validate a discovered link."""
+
+    if not href:
+        return None
+
+    href = href.strip()
+
+    if href.lower().startswith(
+        (
+            "javascript:",
+            "mailto:",
+            "tel:",
+            "data:",
+            "file:",
+        )
+    ):
+        return None
+
+    try:
+
+        absolute_url = urljoin(
+            base_url,
+            href,
+        )
+
+        link = canonical_url(
+            absolute_url,
+        )
+
+        parsed = urlparse(link)
+
+        if parsed.scheme.lower() not in (
+            "http",
+            "https",
+        ):
+            return None
+
+        return link
+
+    except (
+        ValueError,
+        TypeError,
+    TargetError,
+    Exception,
+    ):
+        return None
+
+
+# ==================================================
+# MAIN CRAWLER
+# ==================================================
+
+def crawl(
+    target: str,
+    max_pages: int = MAX_CRAWL_PAGES,
+):
     """
     Crawl HTML pages within the same origin.
 
@@ -83,35 +247,78 @@ def crawl(target: str, max_pages: int = MAX_CRAWL_PAGES):
         }
     """
 
-    # Normalize and validate the target URL.
+    # --------------------------------------------------
+    # VALIDATE TARGET
+    # --------------------------------------------------
+
     target = normalize_target(target)
 
-    # Validate the crawl limit.
+    # --------------------------------------------------
+    # VALIDATE CRAWL LIMIT
+    # --------------------------------------------------
+
     try:
+
+        if isinstance(max_pages, bool):
+            raise ValueError
+
         max_pages = int(max_pages)
 
-    except (TypeError, ValueError, OverflowError):
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+    ):
+
         max_pages = MAX_CRAWL_PAGES
 
     max_pages = max(
         1,
-        min(max_pages, MAX_CRAWL_PAGES)
+        min(
+            max_pages,
+            MAX_CRAWL_PAGES,
+        ),
     )
 
-    queue = deque([target])
-
-    visited = set()
-    queued = {canonical_url(target)}
-
-    pages = []
-    forms = []
-
-    # Track forms to avoid duplicates.
-    discovered_forms = set()
+    # --------------------------------------------------
+    # INITIALIZE CRAWLER
+    # --------------------------------------------------
 
     origin = target
 
+    queue = deque([
+        canonical_url(target)
+    ])
+
+    queued = {
+        canonical_url(target)
+    }
+
+    visited = set()
+
+    pages = []
+
+    forms = []
+
+    discovered_forms = set()
+
+    total_requests = 0
+
+    # --------------------------------------------------
+    # CRAWL LOOP
+    # --------------------------------------------------
+
     while queue and len(pages) < max_pages:
+
+        # Respect the overall request budget.
+        if total_requests >= MAX_SCAN_REQUESTS:
+
+            logger.warning(
+                "Crawler reached request limit: %s",
+                MAX_SCAN_REQUESTS,
+            )
+
+            break
 
         current_url = canonical_url(
             queue.popleft()
@@ -127,144 +334,142 @@ def crawl(target: str, max_pages: int = MAX_CRAWL_PAGES):
         response = None
 
         try:
-            # Fetch the current page safely.
-            response = safe_get(current_url)
 
-            # Skip non-HTML responses.
-            content_type = response.headers.get(
-                "Content-Type",
-                ""
-            ).lower()
+            # ------------------------------------------
+            # FETCH PAGE
+            # ------------------------------------------
 
-            if "text/html" not in content_type:
-                continue
-
-            # Skip pages with excessively large declared content.
-            content_length = response.headers.get(
-                "Content-Length"
+            response = safe_get(
+                current_url,
+                timeout=REQUEST_TIMEOUT,
             )
 
-            if content_length:
+            total_requests += 1
 
-                try:
-                    if int(content_length) > MAX_HTML_SIZE:
-                        logger.warning(
-                            "Skipped oversized page: %s",
-                            current_url,
-                        )
-                        continue
+            # ------------------------------------------
+            # VALIDATE RESPONSE
+            # ------------------------------------------
 
-                except ValueError:
-                    pass
+            if not _is_valid_content_type(response):
+                continue
 
-            # Limit HTML processing.
-            html_content = response.text[:MAX_HTML_SIZE]
+            if _is_oversized_response(response):
+
+                logger.warning(
+                    "Skipped oversized page: %s",
+                    current_url,
+                )
+
+                continue
+
+            # ------------------------------------------
+            # PROCESS HTML
+            # ------------------------------------------
+
+            html_content = response.text[
+                :MAX_HTML_SIZE
+            ]
 
             soup = BeautifulSoup(
                 html_content,
-                "html.parser"
+                "html.parser",
             )
 
-            # Use final URL after redirects.
+            # ------------------------------------------
+            # VALIDATE REDIRECT
+            # ------------------------------------------
+
             final_url = canonical_url(
                 response.url
             )
 
-            # Confirm the final response remains same-origin.
-            if not same_origin(origin, final_url):
+            if not same_origin(
+                origin,
+                final_url,
+            ):
 
                 logger.warning(
-                    "Cross-origin response skipped: %s",
+                    "Cross-origin redirect blocked: %s",
                     final_url,
                 )
 
                 continue
 
-            # Extract the page title.
-            title = ""
+            # ------------------------------------------
+            # EXTRACT PAGE INFORMATION
+            # ------------------------------------------
 
-            if soup.title:
-                title = soup.title.get_text(
-                    strip=True
-                )[:500]
+            title = _extract_title(
+                soup
+            )
 
-            # Record the crawled page.
             pages.append({
                 "url": final_url,
                 "status": response.status_code,
                 "title": title,
             })
 
-            # =========================================
+            logger.debug(
+                "Crawled page: %s",
+                final_url,
+            )
+
+            # ==========================================
             # FORM DISCOVERY
-            # =========================================
+            # ==========================================
 
             for form in soup.find_all(
                 "form",
-                limit=MAX_FORMS_PER_PAGE
+                limit=MAX_FORMS_PER_PAGE,
             ):
 
-                fields = []
-
-                for element in form.find_all(
-                    ["input", "textarea", "select", "button"],
-                    limit=MAX_FIELDS_PER_FORM
-                ):
-
-                    name = element.get("name")
-
-                    if not name:
-                        continue
-
-                    field_type = element.get(
-                        "type",
-                        element.name
-                    )
-
-                    value = element.get(
-                        "value",
-                        ""
-                    )
-
-                    fields.append({
-                        "name": str(name)[:300],
-                        "type": str(field_type)[:100],
-                        "value": str(value)[:500],
-                    })
-
-                # Resolve relative form actions.
-                action = urljoin(
-                    final_url,
-                    form.get("action") or final_url
+                fields = _extract_form_fields(
+                    form
                 )
 
-                action = canonical_url(action)
+                action = urljoin(
+                    final_url,
+                    form.get("action") or final_url,
+                )
 
-                method = (
-                    form.get("method") or "GET"
-                ).strip().upper()
+                try:
 
-                # Keep only recognized HTTP methods.
-                if method not in (
-                    "GET",
-                    "POST",
-                    "PUT",
-                    "PATCH",
-                    "DELETE",
-                ):
-                    method = "GET"
+                    action = canonical_url(
+                        action
+                    )
 
-                # Ignore external form actions.
-                if not same_origin(origin, action):
+                except TargetError:
 
                     logger.debug(
-                        "External form action skipped: %s",
+                        "Invalid form action skipped."
+                    )
+
+                    continue
+
+                method = _normalize_form_method(
+                    form.get("method")
+                )
+
+                # --------------------------------------
+                # SAME-ORIGIN VALIDATION
+                # --------------------------------------
+
+                if not same_origin(
+                    origin,
+                    action,
+                ):
+
+                    logger.debug(
+                        "External form skipped: %s",
                         action,
                     )
 
                     continue
 
-                # Avoid duplicate form records.
+                # --------------------------------------
+                # DEDUPLICATE FORMS
+                # --------------------------------------
+
                 form_key = (
                     final_url,
                     action,
@@ -278,7 +483,9 @@ def crawl(target: str, max_pages: int = MAX_CRAWL_PAGES):
                 if form_key in discovered_forms:
                     continue
 
-                discovered_forms.add(form_key)
+                discovered_forms.add(
+                    form_key
+                )
 
                 forms.append({
                     "page": final_url,
@@ -287,96 +494,78 @@ def crawl(target: str, max_pages: int = MAX_CRAWL_PAGES):
                     "fields": fields,
                 })
 
-            # =========================================
-            # INTERNAL LINK DISCOVERY
-            # =========================================
+            # ==========================================
+            # LINK DISCOVERY
+            # ==========================================
 
-            for tag in soup.find_all(
+            links = soup.find_all(
                 "a",
-                href=True
-            ):
+                href=True,
+                limit=MAX_LINKS_PER_PAGE,
+            )
+
+            for tag in links:
 
                 href = tag.get(
                     "href",
-                    ""
-                ).strip()
+                    "",
+                )
 
-                if not href:
+                link = _resolve_link(
+                    final_url,
+                    href,
+                )
+
+                if not link:
                     continue
 
-                # Skip unsupported URL schemes.
-                if href.lower().startswith(
-                    (
-                        "javascript:",
-                        "mailto:",
-                        "tel:",
-                        "data:",
-                        "file:",
-                    )
+                # --------------------------------------
+                # SAME-ORIGIN RESTRICTION
+                # --------------------------------------
+
+                if not same_origin(
+                    origin,
+                    link,
                 ):
                     continue
 
-                try:
-                    absolute_url = urljoin(
-                        final_url,
-                        href
-                    )
+                # --------------------------------------
+                # SKIP UNSAFE ROUTES
+                # --------------------------------------
 
-                    link = canonical_url(
-                        absolute_url
-                    )
+                if _should_skip_link(link):
+                    continue
 
-                    parsed_link = urlparse(link)
+                # --------------------------------------
+                # AVOID DUPLICATE QUEUE ENTRIES
+                # --------------------------------------
 
-                    # Accept only HTTP and HTTPS links.
-                    if parsed_link.scheme.lower() not in (
-                        "http",
-                        "https",
-                    ):
-                        continue
+                if (
+                    link not in visited
+                    and link not in queued
+                ):
 
-                    # Stay within the target's origin.
-                    if not same_origin(origin, link):
-                        continue
+                    queue.append(link)
 
-                    # Skip potentially state-changing links.
-                    if _should_skip_link(link):
-                        continue
+                    queued.add(link)
 
-                    # Avoid duplicate URLs in queue and visited set.
-                    if (
-                        link not in visited
-                        and link not in queued
-                    ):
-
-                        queue.append(link)
-                        queued.add(link)
-
-                except (
-                    ValueError,
-                    TypeError,
-                ) as exc:
-
-                    logger.debug(
-                        "Crawler skipped malformed link %s: %s",
-                        href,
-                        exc,
-                    )
+        # --------------------------------------------------
+        # EXCEPTION HANDLING
+        # --------------------------------------------------
 
         except TargetError as exc:
 
             logger.warning(
-                "Crawler blocked unsafe URL %s: %s",
+                "Blocked unsafe URL %s: %s",
                 current_url,
                 exc,
             )
 
-        except Exception as exc:
+        except Exception:
 
             logger.exception(
-                "Crawler encountered an error on %s: %s",
+                "Crawler failed on page: %s",
                 current_url,
-                exc,
             )
 
         finally:
@@ -389,15 +578,17 @@ def crawl(target: str, max_pages: int = MAX_CRAWL_PAGES):
                 except Exception:
                     pass
 
-    # =============================================
+    # ==================================================
     # CRAWL SUMMARY
-    # =============================================
+    # ==================================================
 
     logger.info(
-        "Crawl completed for %s: %d pages, %d forms",
+        "Crawl completed | Target: %s | Pages: %d | "
+        "Forms: %d | Requests: %d",
         target,
         len(pages),
         len(forms),
+        total_requests,
     )
 
     return {
