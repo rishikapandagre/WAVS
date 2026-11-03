@@ -436,11 +436,27 @@ def start_scan():
                 len(port_results),
             )
 
+        
         # -------------------------------------------------
-        # SUMMARY
+        # SUMMARY & SCAN VALIDATION
         # -------------------------------------------------
 
         summary = summarize_findings(findings)
+
+        # A scan with zero successfully crawled pages
+        # cannot be considered a successful assessment.
+        scan_status = (
+            "completed"
+            if visited_count > 0
+            else "inconclusive"
+        )
+
+        if visited_count == 0:
+            logger.warning(
+                "Scan inconclusive | No pages successfully scanned | Target: %s",
+                target,
+            )
+
 
         # -------------------------------------------------
         # SAVE TO DATABASE
@@ -466,7 +482,10 @@ def start_scan():
         scan_result = {
             "id": scan_id,
             "target": target,
-            "status": "completed",
+            "status": scan_status,
+            "scan_quality": ( "valid"
+                    if visited_count > 0
+                    else "insufficient_data"),
             "pages_scanned": visited_count,
             "forms_found": len(forms),
             "findings": findings,
